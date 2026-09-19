@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cricket Match Scoring</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1>Cricket Match Scoring</h1>
+      <p>Track live scores for Home vs Opponent</p>
+    </header>
+
+    <section class="meta-card">
+      <div class="field-row">
+        <label for="homeTeam">Home Team</label>
+        <input id="homeTeam" type="text" placeholder="Enter home team name" />
+      </div>
+      <div class="field-row">
+        <label for="awayTeam">Opponent Team</label>
+        <input id="awayTeam" type="text" placeholder="Enter opponent team name" />
+      </div>
+      <div class="field-row inline">
+        <label for="maxOvers">Max Overs</label>
+        <input id="maxOvers" type="number" min="1" value="20" />
+      </div>
+      <div class="button-row">
+        <button id="saveTeamsBtn" class="primary">Save Team Details</button>
+        <button id="resetMatchBtn" class="danger">Reset Match</button>
+      </div>
+    </section>
+
+    <section class="scoreboard-grid">
+      <article class="team-card" data-team="home">
+        <h2 id="homeTitle">Home</h2>
+        <div class="score">Runs: <span id="homeRuns">0</span>/<span id="homeWickets">0</span></div>
+        <div class="overs">Overs: <span id="homeOvers">0.0</span></div>
+        <div class="over-summary-block">
+          <h3>Over Summary</h3>
+          <ul id="homeOverSummary" class="over-summary-list">
+            <li>No overs yet.</li>
+          </ul>
+        </div>
+
+        <div class="actions">
+          <button data-action="run" data-team="home" data-value="1">+1 Run</button>
+          <button data-action="run" data-team="home" data-value="2">+2 Runs</button>
+          <button data-action="run" data-team="home" data-value="3">+3 Runs</button>
+          <button data-action="run" data-team="home" data-value="4">+4 Runs</button>
+          <button data-action="run" data-team="home" data-value="6">+6 Runs</button>
+          <button data-action="wicket" data-team="home">Wicket</button>
+          <button data-action="runout" data-team="home">Run-out+</button>
+          <button data-action="ball" data-team="home">Legal Ball</button>
+          <button data-action="wide" data-team="home">Wide (+1)</button>
+          <button data-action="noball" data-team="home">No Ball (+1)</button>
+          <button data-action="noball+" data-team="home">No Ball+</button>
+          <button data-action="undo" data-team="home" class="secondary">Undo</button>
+        </div>
+
+        <div id="homeExtraPanel" class="extra-panel hidden">
+          <p id="homeExtraLabel" class="extra-label">Select runs</p>
+          <div class="extra-buttons">
+            <button data-action="extra-run" data-team="home" data-value="0">0</button>
+            <button data-action="extra-run" data-team="home" data-value="1">1</button>
+            <button data-action="extra-run" data-team="home" data-value="2">2</button>
+            <button data-action="extra-run" data-team="home" data-value="3">3</button>
+            <button data-action="extra-run" data-team="home" data-value="4">4</button>
+            <button data-action="extra-run" data-team="home" data-value="5">5</button>
+            <button data-action="extra-run" data-team="home" data-value="6">6</button>
+            <button data-action="extra-cancel" data-team="home" class="secondary">Cancel</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="team-card" data-team="away">
+        <h2 id="awayTitle">Opponent</h2>
+        <div class="score">Runs: <span id="awayRuns">0</span>/<span id="awayWickets">0</span></div>
+        <div class="overs">Overs: <span id="awayOvers">0.0</span></div>
+        <div class="over-summary-block">
+          <h3>Over Summary</h3>
+          <ul id="awayOverSummary" class="over-summary-list">
+            <li>No overs yet.</li>
+          </ul>
+        </div>
+
+        <div class="actions">
+          <button data-action="run" data-team="away" data-value="1">+1 Run</button>
+          <button data-action="run" data-team="away" data-value="2">+2 Runs</button>
+          <button data-action="run" data-team="away" data-value="3">+3 Runs</button>
+          <button data-action="run" data-team="away" data-value="4">+4 Runs</button>
+          <button data-action="run" data-team="away" data-value="6">+6 Runs</button>
+          <button data-action="wicket" data-team="away">Wicket</button>
+          <button data-action="runout" data-team="away">Run-out+</button>
+          <button data-action="ball" data-team="away">Legal Ball</button>
+          <button data-action="wide" data-team="away">Wide (+1)</button>
+          <button data-action="noball" data-team="away">No Ball</button>
+          <button data-action="noball+" data-team="away">No Ball+</button>
+          <button data-action="undo" data-team="away" class="secondary">Undo</button>
+        </div>
+
+        <div id="awayExtraPanel" class="extra-panel hidden">
+          <p id="awayExtraLabel" class="extra-label">Select runs</p>
+          <div class="extra-buttons">
+            <button data-action="extra-run" data-team="away" data-value="0">0</button>
+            <button data-action="extra-run" data-team="away" data-value="1">1</button>
+            <button data-action="extra-run" data-team="away" data-value="2">2</button>
+            <button data-action="extra-run" data-team="away" data-value="3">3</button>
+            <button data-action="extra-run" data-team="away" data-value="4">4</button>
+            <button data-action="extra-run" data-team="away" data-value="5">5</button>
+            <button data-action="extra-run" data-team="away" data-value="6">6</button>
+            <button data-action="extra-cancel" data-team="away" class="secondary">Cancel</button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="summary-card">
+      <h3>Match Summary</h3>
+      <p id="summaryText">Set team names and start scoring.</p>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
