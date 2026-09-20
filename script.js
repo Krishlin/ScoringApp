@@ -2,11 +2,15 @@ const STORAGE_KEY = "cricket-scoring-state-v1";
 // House rule: a wide or no ball is worth 2, before any runs actually run.
 const EXTRA_PENALTY_RUNS = 2;
 const BALLS_PER_OVER = 6;
+const DEFAULT_MAX_OVERS = 5;
+const ALL_OUT_WICKETS = 10;
 const TEAM_KEYS = ["home", "away"];
 
 const state = {
-  maxOvers: 20,
+  maxOvers: DEFAULT_MAX_OVERS,
   activeTeam: "home",
+  // Whoever is scored first bats first, which is what makes the second innings a chase.
+  firstInnings: null,
   pendingExtra: null,
   teams: {
     home: {
@@ -45,7 +49,7 @@ const ui = {
   rateText: document.getElementById("rateText"),
   overStrip: document.getElementById("overStrip"),
   pad: document.getElementById("pad"),
-  inningsClosed: document.getElementById("inningsClosed"),
+  matchStatus: document.getElementById("matchStatus"),
   lastBall: document.getElementById("lastBall"),
   overList: document.getElementById("overList"),
   backdrop: document.getElementById("backdrop"),
@@ -81,8 +85,12 @@ function getTeam(teamKey) {
   return state.teams[teamKey];
 }
 
-function overWord(count) {
-  return count === 1 ? "over" : "overs";
+function plural(count, word) {
+  return `${count} ${count === 1 ? word : `${word}s`}`;
+}
+
+function otherTeamKey(teamKey) {
+  return teamKey === "home" ? "away" : "home";
 }
 
 function activeTeam() {
@@ -91,7 +99,80 @@ function activeTeam() {
 
 function isInningsComplete(teamKey) {
   const team = getTeam(teamKey);
-  return team.wickets >= 10 || team.balls >= state.maxOvers * BALLS_PER_OVER;
+  return team.wickets >= ALL_OUT_WICKETS || team.balls >= state.maxOvers * BALLS_PER_OVER;
+}
+
+function ballsRemaining(teamKey) {
+  return Math.max(0, state.maxOvers * BALLS_PER_OVER - getTeam(teamKey).balls);
+}
+
+function inningsEndReason(teamKey) {
+  const team = getTeam(teamKey);
+  return team.wickets >= ALL_OUT_WICKETS
+    ? `${team.name} are all out for ${team.runs}.`
+    : `${team.name} finished on ${team.runs} from ${plural(state.maxOvers, "over")}.`;
+}
+
+// A result exists only once the side batting first has finished: until then there is
+// nothing to chase. Returns null while the match is still live.
+function matchResult() {
+  const firstKey = state.firstInnings;
+  if (!firstKey || !isInningsComplete(firstKey)) return null;
+
+  const secondKey = otherTeamKey(firstKey);
+  const first = getTeam(firstKey);
+  const second = getTeam(secondKey);
+
+  if (second.runs > first.runs) {
+    const inHand = ALL_OUT_WICKETS - second.wickets;
+    const margin = inHand > 0 ? ` by ${plural(inHand, "wicket")}` : "";
+    return `${second.name} won${margin}`;
+  }
+
+  if (!isInningsComplete(secondKey)) return null;
+
+  return second.runs === first.runs
+    ? "Match tied"
+    : `${first.name} won by ${plural(first.runs - second.runs, "run")}`;
+}
+
+function isScoringClosed(teamKey) {
+  return Boolean(matchResult()) || isInningsComplete(teamKey);
+}
+
+function matchStatus() {
+  const result = matchResult();
+  if (result) return { kind: "result", text: result };
+
+  const firstKey = state.firstInnings;
+
+  if (firstKey && isInningsComplete(firstKey)) {
+    const chaseKey = otherTeamKey(firstKey);
+    const chase = getTeam(chaseKey);
+    const needed = getTeam(firstKey).runs + 1 - chase.runs;
+
+    if (state.activeTeam === chaseKey) {
+      return {
+        kind: "target",
+        text: `${chase.name} need ${plural(needed, "run")} from ${plural(ballsRemaining(chaseKey), "ball")}.`
+      };
+    }
+
+    return {
+      kind: "innings",
+      text: `${inningsEndReason(firstKey)} ${chase.name} need ${plural(needed, "run")} to win, so tap them above to start the chase.`
+    };
+  }
+
+  if (isInningsComplete(state.activeTeam)) {
+    const other = getTeam(otherTeamKey(state.activeTeam));
+    return {
+      kind: "innings",
+      text: `${inningsEndReason(state.activeTeam)} Tap ${other.name} above to score their innings, or undo the last ball.`
+    };
+  }
+
+  return null;
 }
 
 function createTeamSnapshot(team) {
@@ -120,7 +201,8 @@ function recordDelivery(teamKey, event, runs, isLegalBall, isWicket = false, ext
 }
 
 function applyScoringEvent(teamKey, eventData) {
-  if (isInningsComplete(teamKey)) return;
+  if (isScoringClosed(teamKey)) return;
+  if (!state.firstInnings) state.firstInnings = teamKey;
 
   const team = getTeam(teamKey);
   const {
@@ -189,6 +271,11 @@ function undo(teamKey) {
   team.balls = last.balls;
   team.deliveries = Array.isArray(last.deliveries) ? [...last.deliveries] : [];
 
+  // Undoing back to an empty match forgets who batted first, so the next ball decides again.
+  if (TEAM_KEYS.every(key => getTeam(key).deliveries.length === 0)) {
+    state.firstInnings = null;
+  }
+
   updateUI();
 }
 
@@ -203,6 +290,7 @@ function resetMatch() {
   }
 
   state.activeTeam = "home";
+  state.firstInnings = null;
   closeSheet();
   syncSetupInputs();
   updateUI();
@@ -328,21 +416,16 @@ function renderHistory(team) {
   });
 }
 
-function renderInningsState(team) {
-  const closed = isInningsComplete(state.activeTeam);
-  const other = getTeam(state.activeTeam === "home" ? "away" : "home");
+function renderMatchStatus() {
+  const status = matchStatus();
 
   for (const button of ui.pad.querySelectorAll("button")) {
-    button.disabled = closed;
+    button.disabled = isScoringClosed(state.activeTeam);
   }
 
-  ui.inningsClosed.hidden = !closed;
-  if (closed) {
-    const reason = team.wickets >= 10
-      ? `${team.name} are all out.`
-      : `${state.maxOvers} ${overWord(state.maxOvers)} bowled.`;
-    ui.inningsClosed.textContent = `${reason} Tap ${other.name} above to score their innings, or undo the last ball.`;
-  }
+  ui.matchStatus.hidden = !status;
+  ui.matchStatus.classList.toggle("match-status--result", status?.kind === "result");
+  if (status) ui.matchStatus.textContent = status.text;
 }
 
 function renderLastBall(team) {
@@ -378,13 +461,13 @@ function render() {
 
   ui.runs.textContent = team.runs;
   ui.wickets.textContent = team.wickets;
-  ui.oversText.textContent = `${toOvers(team.balls)} of ${state.maxOvers} ${overWord(state.maxOvers)}`;
+  ui.oversText.textContent = `${toOvers(team.balls)} of ${plural(state.maxOvers, "over")}`;
 
   const rate = team.balls > 0 ? (team.runs * BALLS_PER_OVER) / team.balls : 0;
   ui.rateText.textContent = `${rate.toFixed(2)} an over`;
 
   renderOverStrip(team);
-  renderInningsState(team);
+  renderMatchStatus();
   renderLastBall(team);
   renderHistory(team);
   renderSheet();
@@ -405,6 +488,14 @@ function saveState() {
   }
 }
 
+// Matches saved before innings order was tracked: the only side with balls bowled
+// batted first, and if both have batted the app started on home, so home did.
+function inferFirstInnings(teams) {
+  const batted = TEAM_KEYS.filter(key => (teams?.[key]?.deliveries ?? []).length > 0);
+  if (batted.length === 0) return null;
+  return batted.length === 1 ? batted[0] : "home";
+}
+
 function loadState() {
   let raw = null;
   try {
@@ -418,8 +509,11 @@ function loadState() {
     const saved = JSON.parse(raw);
     if (!saved?.teams?.home || !saved?.teams?.away) return false;
 
-    state.maxOvers = Number(saved.maxOvers) > 0 ? Math.floor(Number(saved.maxOvers)) : 20;
+    state.maxOvers = Number(saved.maxOvers) > 0 ? Math.floor(Number(saved.maxOvers)) : DEFAULT_MAX_OVERS;
     if (TEAM_KEYS.includes(saved.activeTeam)) state.activeTeam = saved.activeTeam;
+    state.firstInnings = TEAM_KEYS.includes(saved.firstInnings)
+      ? saved.firstInnings
+      : inferFirstInnings(saved.teams);
 
     for (const teamKey of TEAM_KEYS) {
       state.teams[teamKey] = { ...state.teams[teamKey], ...saved.teams[teamKey] };
