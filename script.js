@@ -1,4 +1,9 @@
 const STORAGE_KEY = "cricket-scoring-state-v1";
+
+// Apps Script web app URL that finished matches get posted to. Setup steps are in
+// google-apps-script.gs. Left empty, the app never touches the network.
+const SHEET_ENDPOINT = "https://script.google.com/macros/s/AKfycbyV5CzT-b9z1V7O9ArR9f1Gxam7s_Up25SY240wox5tb8Ibmnt1FeQd9gEMUdLm2uVN/exec";
+const UPLOAD_TIMEOUT_MS = 10000;
 // House rule: a wide or no ball is worth 2, before any runs actually run.
 const EXTRA_PENALTY_RUNS = 2;
 const BALLS_PER_OVER = 6;
@@ -12,6 +17,10 @@ const state = {
   activeTeam: "home",
   // Whoever is scored first bats first, which is what makes the second innings a chase.
   firstInnings: null,
+  // Set by "End match": freezes both innings until the match is reset.
+  matchEnded: false,
+  matchId: null,
+  upload: { status: "idle", error: null },
   pendingExtra: null,
   teams: {
     home: {
@@ -20,7 +29,8 @@ const state = {
       wickets: 0,
       balls: 0,
       deliveries: [],
-      history: []
+      history: [],
+      inningsEnded: false
     },
     away: {
       name: "Opponent",
@@ -28,7 +38,8 @@ const state = {
       wickets: 0,
       balls: 0,
       deliveries: [],
-      history: []
+      history: [],
+      inningsEnded: false
     }
   }
 };
@@ -52,6 +63,10 @@ const ui = {
   overStrip: document.getElementById("overStrip"),
   pad: document.getElementById("pad"),
   matchStatus: document.getElementById("matchStatus"),
+  matchStatusText: document.getElementById("matchStatusText"),
+  matchStatusAction: document.getElementById("matchStatusAction"),
+  matchStatusNote: document.getElementById("matchStatusNote"),
+  undoBtn: document.getElementById("undoBtn"),
   lastBall: document.getElementById("lastBall"),
   overList: document.getElementById("overList"),
   backdrop: document.getElementById("backdrop"),
@@ -138,13 +153,25 @@ function matchResult() {
     : `${first.name} won by ${plural(first.runs - second.runs, "run")}`;
 }
 
-function isScoringClosed(teamKey) {
-  return Boolean(matchResult()) || isInningsComplete(teamKey);
+// Frozen means the scorer has deliberately closed this innings, or the whole match:
+// nothing more goes in and nothing comes back out, short of reopening it.
+function isFrozen(teamKey) {
+  return state.matchEnded || getTeam(teamKey).inningsEnded;
 }
 
-function matchStatus() {
+function isScoringClosed(teamKey) {
+  return isFrozen(teamKey) || Boolean(matchResult()) || isInningsComplete(teamKey);
+}
+
+function matchStatusText() {
   const result = matchResult();
-  if (result) return { kind: "result", text: result };
+  if (result) return result;
+  if (state.matchEnded) return "Match over.";
+
+  const team = activeTeam();
+  if (team.inningsEnded) {
+    return `${team.name} scored ${team.runs}/${team.wickets}. This innings is closed.`;
+  }
 
   const firstKey = state.firstInnings;
 
@@ -154,26 +181,45 @@ function matchStatus() {
     const needed = getTeam(firstKey).runs + 1 - chase.runs;
 
     if (state.activeTeam === chaseKey) {
-      return {
-        kind: "target",
-        text: `${chase.name} need ${plural(needed, "run")} from ${plural(ballsRemaining(chaseKey), "ball")}.`
-      };
+      return `${chase.name} need ${plural(needed, "run")} from ${plural(ballsRemaining(chaseKey), "ball")}.`;
     }
 
-    return {
-      kind: "innings",
-      text: `${inningsEndReason(firstKey)} ${chase.name} need ${plural(needed, "run")} to win, so tap them above to start the chase.`
-    };
+    return `${inningsEndReason(firstKey)} ${chase.name} need ${plural(needed, "run")} to win.`;
   }
 
   if (isInningsComplete(state.activeTeam)) {
-    const other = getTeam(otherTeamKey(state.activeTeam));
-    return {
-      kind: "innings",
-      text: `${inningsEndReason(state.activeTeam)} Tap ${other.name} above to score their innings, or undo the last ball.`
-    };
+    return inningsEndReason(state.activeTeam);
   }
 
+  return null;
+}
+
+function uploadNote() {
+  const resetHint = "Reset the match in setup to score a new one.";
+  if (!SHEET_ENDPOINT) return resetHint;
+
+  switch (state.upload.status) {
+    case "sending":
+      return "Saving this match to the sheet.";
+    case "sent":
+      return `Saved to the match sheet. ${resetHint}`;
+    case "failed":
+      return `Could not save to the match sheet, ${state.upload.error}. The match is still on this phone.`;
+    default:
+      return resetHint;
+  }
+}
+
+// At most one action is offered at a time, and only once it is the obvious next step.
+function statusAction() {
+  if (state.matchEnded) {
+    return state.upload.status === "failed"
+      ? { action: "retry-upload", label: "Retry upload", tone: "quiet" }
+      : null;
+  }
+  if (matchResult()) return { action: "end-match", label: "End match", tone: "primary" };
+  if (activeTeam().inningsEnded) return { action: "reopen-innings", label: "Reopen innings", tone: "quiet" };
+  if (isInningsComplete(state.activeTeam)) return { action: "end-innings", label: "End innings", tone: "primary" };
   return null;
 }
 
@@ -204,7 +250,10 @@ function recordDelivery(teamKey, event, runs, isLegalBall, isWicket = false, ext
 
 function applyScoringEvent(teamKey, eventData) {
   if (isScoringClosed(teamKey)) return;
-  if (!state.firstInnings) state.firstInnings = teamKey;
+  if (!state.firstInnings) {
+    state.firstInnings = teamKey;
+    state.matchId = createMatchId();
+  }
 
   const team = getTeam(teamKey);
   const {
@@ -264,6 +313,8 @@ function addExtraPlus(teamKey, mode, additionalRuns) {
 }
 
 function undo(teamKey) {
+  if (isFrozen(teamKey)) return;
+
   const team = getTeam(teamKey);
   const last = team.history.pop();
   if (!last) return;
@@ -276,9 +327,111 @@ function undo(teamKey) {
   // Undoing back to an empty match forgets who batted first, so the next ball decides again.
   if (TEAM_KEYS.every(key => getTeam(key).deliveries.length === 0)) {
     state.firstInnings = null;
+    state.matchId = null;
   }
 
   updateUI();
+}
+
+function endInnings() {
+  const team = activeTeam();
+  if (team.inningsEnded) return;
+
+  team.inningsEnded = true;
+  state.activeTeam = otherTeamKey(state.activeTeam);
+  state.pendingExtra = null;
+  updateUI();
+}
+
+function reopenInnings() {
+  activeTeam().inningsEnded = false;
+  updateUI();
+}
+
+function createMatchId() {
+  // randomUUID needs a secure context, which a phone on a plain http LAN address is not.
+  if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
+  return `m-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function buildMatchRecord() {
+  const firstKey = state.firstInnings ?? "home";
+  const innings = teamKey => {
+    const team = getTeam(teamKey);
+    return {
+      team: team.name,
+      runs: team.runs,
+      wickets: team.wickets,
+      overs: toOvers(team.balls)
+    };
+  };
+
+  return {
+    matchId: state.matchId,
+    playedAt: new Date().toISOString(),
+    oversEach: state.maxOvers,
+    wicketsEach: state.maxWickets,
+    first: innings(firstKey),
+    second: innings(otherTeamKey(firstKey)),
+    result: matchResult() ?? "No result"
+  };
+}
+
+function uploadFailureReason(error) {
+  if (error.name === "AbortError") return "it timed out";
+  // fetch reports every network-level problem the same way: offline, DNS, blocked, CORS.
+  if (error.name === "TypeError") return "the phone could not reach it";
+  return error.message;
+}
+
+async function uploadMatch() {
+  if (!SHEET_ENDPOINT || state.upload.status === "sending") return;
+
+  state.upload = { status: "sending", error: null };
+  updateUI();
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(SHEET_ENDPOINT, {
+      method: "POST",
+      // text/plain keeps this a simple request, so the browser skips the CORS preflight
+      // that Apps Script web apps do not answer.
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(buildMatchRecord()),
+      redirect: "follow",
+      signal: controller.signal
+    });
+
+    if (!response.ok) throw new Error(`the sheet replied ${response.status}`);
+
+    // A deployment that is not open to "Anyone" answers with a sign-in page and a 200,
+    // so nothing counts as saved without an explicit ok.
+    let body = null;
+    try {
+      body = JSON.parse(await response.text());
+    } catch {
+      body = null;
+    }
+    if (body?.ok !== true) throw new Error("the sheet did not confirm the save");
+
+    state.upload = { status: "sent", error: null };
+  } catch (error) {
+    state.upload = { status: "failed", error: uploadFailureReason(error) };
+  } finally {
+    clearTimeout(timer);
+    updateUI();
+  }
+}
+
+function endMatch() {
+  state.matchEnded = true;
+  state.pendingExtra = null;
+  updateUI();
+  // Deliberately not awaited: the match is already frozen and saved on the phone,
+  // so a slow or dead sheet must not hold up the result.
+  uploadMatch();
 }
 
 function resetMatch() {
@@ -289,10 +442,14 @@ function resetMatch() {
     team.balls = 0;
     team.deliveries = [];
     team.history = [];
+    team.inningsEnded = false;
   }
 
   state.activeTeam = "home";
   state.firstInnings = null;
+  state.matchEnded = false;
+  state.matchId = null;
+  state.upload = { status: "idle", error: null };
   closeSheet();
   syncSetupInputs();
   updateUI();
@@ -419,15 +576,31 @@ function renderHistory(team) {
 }
 
 function renderMatchStatus() {
-  const status = matchStatus();
+  const text = matchStatusText();
+  const action = statusAction();
 
   for (const button of ui.pad.querySelectorAll("button")) {
     button.disabled = isScoringClosed(state.activeTeam);
   }
+  ui.undoBtn.disabled = isFrozen(state.activeTeam);
 
-  ui.matchStatus.hidden = !status;
-  ui.matchStatus.classList.toggle("match-status--result", status?.kind === "result");
-  if (status) ui.matchStatus.textContent = status.text;
+  ui.matchStatus.hidden = !text;
+  ui.matchStatus.classList.toggle("match-status--result", Boolean(matchResult()));
+  if (text) ui.matchStatusText.textContent = text;
+
+  ui.matchStatusAction.hidden = !action;
+  if (action) {
+    ui.matchStatusAction.dataset.action = action.action;
+    ui.matchStatusAction.classList.toggle("match-status-action--primary", action.tone === "primary");
+    ui.matchStatusAction.classList.toggle("match-status-action--quiet", action.tone === "quiet");
+    // An armed confirm owns the label until it resolves or times out.
+    if (!isConfirmArmed(ui.matchStatusAction)) ui.matchStatusAction.textContent = action.label;
+  }
+
+  ui.matchStatusNote.hidden = !state.matchEnded;
+  if (state.matchEnded) {
+    ui.matchStatusNote.textContent = uploadNote();
+  }
 }
 
 function renderLastBall(team) {
@@ -498,6 +671,16 @@ function inferFirstInnings(teams) {
   return batted.length === 1 ? batted[0] : "home";
 }
 
+// An upload still in flight when the page closed has an unknowable outcome, so it
+// comes back as failed and the scorer gets a retry rather than a false "saved".
+function restoreUploadState(saved) {
+  const status = saved?.status;
+  if (status === "sent") return { status: "sent", error: null };
+  if (status === "failed") return { status: "failed", error: saved.error ?? "it did not finish" };
+  if (status === "sending") return { status: "failed", error: "the app closed mid-upload" };
+  return { status: "idle", error: null };
+}
+
 function loadState() {
   let raw = null;
   try {
@@ -517,12 +700,16 @@ function loadState() {
     state.firstInnings = TEAM_KEYS.includes(saved.firstInnings)
       ? saved.firstInnings
       : inferFirstInnings(saved.teams);
+    state.matchEnded = Boolean(saved.matchEnded);
+    state.matchId = typeof saved.matchId === "string" ? saved.matchId : null;
+    state.upload = restoreUploadState(saved.upload);
 
     for (const teamKey of TEAM_KEYS) {
       state.teams[teamKey] = { ...state.teams[teamKey], ...saved.teams[teamKey] };
       const team = getTeam(teamKey);
       team.deliveries = Array.isArray(team.deliveries) ? team.deliveries : [];
       team.history = Array.isArray(team.history) ? team.history : [];
+      team.inningsEnded = Boolean(team.inningsEnded);
     }
     return true;
   } catch {
@@ -569,25 +756,41 @@ function setSetupOpen(open) {
   ui.setupToggle.setAttribute("aria-expanded", String(open));
 }
 
-let resetConfirmTimer = null;
+const armedConfirms = new Map();
 
-function clearResetConfirm() {
-  if (resetConfirmTimer) clearTimeout(resetConfirmTimer);
-  resetConfirmTimer = null;
-  ui.resetBtn.classList.remove("confirming");
-  ui.resetBtn.textContent = "Reset match";
+function isConfirmArmed(button) {
+  return armedConfirms.has(button);
 }
 
-function handleReset() {
-  if (resetConfirmTimer) {
-    clearResetConfirm();
-    resetMatch();
-    return;
+function disarmConfirm(button) {
+  const armed = armedConfirms.get(button);
+  if (!armed) return;
+  clearTimeout(armed.timer);
+  armedConfirms.delete(button);
+  button.classList.remove("confirming");
+  button.textContent = armed.label;
+}
+
+function disarmOtherConfirms(keep) {
+  for (const button of [...armedConfirms.keys()]) {
+    if (button !== keep) disarmConfirm(button);
+  }
+}
+
+// Returns true only on the second tap, so the caller can act on it.
+function confirmTap(button, prompt) {
+  if (isConfirmArmed(button)) {
+    disarmConfirm(button);
+    return true;
   }
 
-  ui.resetBtn.classList.add("confirming");
-  ui.resetBtn.textContent = "Tap again to clear";
-  resetConfirmTimer = setTimeout(clearResetConfirm, 4000);
+  armedConfirms.set(button, {
+    label: button.textContent,
+    timer: setTimeout(() => disarmConfirm(button), 4000)
+  });
+  button.classList.add("confirming");
+  button.textContent = prompt;
+  return false;
 }
 
 function buzz() {
@@ -619,13 +822,21 @@ function handleAction(event) {
     "switch-team": () => setActiveTeam(trigger.dataset.team),
     "toggle-setup": () => setSetupOpen(ui.setupPanel.hidden),
     "close-setup": () => setSetupOpen(false),
-    "reset-match": () => handleReset()
+    "end-innings": () => endInnings(),
+    "reopen-innings": () => reopenInnings(),
+    "retry-upload": () => uploadMatch(),
+    "end-match": () => {
+      if (confirmTap(ui.matchStatusAction, "Tap again to end")) endMatch();
+    },
+    "reset-match": () => {
+      if (confirmTap(ui.resetBtn, "Tap again to clear")) resetMatch();
+    }
   };
 
   const handler = handlers[action];
   if (!handler) return;
 
-  if (action !== "reset-match") clearResetConfirm();
+  disarmOtherConfirms(trigger);
   buzz();
   handler();
 }
