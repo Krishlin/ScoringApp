@@ -8,7 +8,7 @@ const UPLOAD_TIMEOUT_MS = 10000;
 const EXTRA_PENALTY_RUNS = 2;
 const BALLS_PER_OVER = 6;
 const DEFAULT_MAX_OVERS = 5;
-const DEFAULT_MAX_WICKETS = 8;
+const DEFAULT_MAX_WICKETS = 7;
 const TEAM_KEYS = ["home", "away"];
 
 const state = {
