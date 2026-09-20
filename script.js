@@ -1,12 +1,13 @@
 const STORAGE_KEY = "cricket-scoring-state-v1";
+// House rule: a wide or no ball is worth 2, before any runs actually run.
+const EXTRA_PENALTY_RUNS = 2;
+const BALLS_PER_OVER = 6;
 const TEAM_KEYS = ["home", "away"];
 
 const state = {
   maxOvers: 20,
-  pendingExtras: {
-    home: null,
-    away: null
-  },
+  activeTeam: "home",
+  pendingExtra: null,
   teams: {
     home: {
       name: "Home",
@@ -31,28 +32,48 @@ const ui = {
   homeTeamInput: document.getElementById("homeTeam"),
   awayTeamInput: document.getElementById("awayTeam"),
   maxOversInput: document.getElementById("maxOvers"),
-  saveTeamsBtn: document.getElementById("saveTeamsBtn"),
-  resetMatchBtn: document.getElementById("resetMatchBtn"),
-  homeTitle: document.getElementById("homeTitle"),
-  awayTitle: document.getElementById("awayTitle"),
-  homeRuns: document.getElementById("homeRuns"),
-  homeWickets: document.getElementById("homeWickets"),
-  homeOvers: document.getElementById("homeOvers"),
-  homeOverSummary: document.getElementById("homeOverSummary"),
-  homeExtraPanel: document.getElementById("homeExtraPanel"),
-  homeExtraLabel: document.getElementById("homeExtraLabel"),
-  awayRuns: document.getElementById("awayRuns"),
-  awayWickets: document.getElementById("awayWickets"),
-  awayOvers: document.getElementById("awayOvers"),
-  awayOverSummary: document.getElementById("awayOverSummary"),
-  awayExtraPanel: document.getElementById("awayExtraPanel"),
-  awayExtraLabel: document.getElementById("awayExtraLabel"),
-  summaryText: document.getElementById("summaryText")
+  setupPanel: document.getElementById("setupPanel"),
+  setupToggle: document.getElementById("setupToggle"),
+  resetBtn: document.getElementById("resetBtn"),
+  homeName: document.getElementById("homeName"),
+  awayName: document.getElementById("awayName"),
+  homeScore: document.getElementById("homeScore"),
+  awayScore: document.getElementById("awayScore"),
+  runs: document.getElementById("runs"),
+  wickets: document.getElementById("wickets"),
+  oversText: document.getElementById("oversText"),
+  rateText: document.getElementById("rateText"),
+  overStrip: document.getElementById("overStrip"),
+  pad: document.getElementById("pad"),
+  inningsClosed: document.getElementById("inningsClosed"),
+  lastBall: document.getElementById("lastBall"),
+  overList: document.getElementById("overList"),
+  backdrop: document.getElementById("backdrop"),
+  sheet: document.getElementById("sheet"),
+  sheetTitle: document.getElementById("sheetTitle"),
+  sheetHint: document.getElementById("sheetHint")
 };
 
+const SHEET_COPY = {
+  runout: {
+    title: "Run out",
+    hint: "How many runs were completed before the wicket?"
+  },
+  "wide+": {
+    title: "Wide",
+    hint: "2 runs added. How many more were run?"
+  },
+  "noball+": {
+    title: "No ball",
+    hint: "2 runs added. How many came off the bat?"
+  }
+};
+
+/* --- scoring ----------------------------------------------------------- */
+
 function toOvers(balls) {
-  const over = Math.floor(balls / 6);
-  const ball = balls % 6;
+  const over = Math.floor(balls / BALLS_PER_OVER);
+  const ball = balls % BALLS_PER_OVER;
   return `${over}.${ball}`;
 }
 
@@ -60,9 +81,17 @@ function getTeam(teamKey) {
   return state.teams[teamKey];
 }
 
+function overWord(count) {
+  return count === 1 ? "over" : "overs";
+}
+
+function activeTeam() {
+  return getTeam(state.activeTeam);
+}
+
 function isInningsComplete(teamKey) {
   const team = getTeam(teamKey);
-  return team.wickets >= 10 || team.balls >= state.maxOvers * 6;
+  return team.wickets >= 10 || team.balls >= state.maxOvers * BALLS_PER_OVER;
 }
 
 function createTeamSnapshot(team) {
@@ -79,14 +108,14 @@ function pushHistory(teamKey) {
   team.history.push(createTeamSnapshot(team));
 }
 
-function recordDelivery(teamKey, event, runs, isLegalBall, isWicket = false, offBatRuns = null) {
+function recordDelivery(teamKey, event, runs, isLegalBall, isWicket = false, extraRuns = null) {
   const team = getTeam(teamKey);
   team.deliveries.push({
     event,
     runs,
     isLegalBall,
     isWicket,
-    offBatRuns
+    extraRuns
   });
 }
 
@@ -99,8 +128,7 @@ function applyScoringEvent(teamKey, eventData) {
     runs = 0,
     isLegalBall = false,
     isWicket = false,
-    offBatRuns = null,
-    statusText = ""
+    extraRuns = null
   } = eventData;
 
   pushHistory(teamKey);
@@ -108,183 +136,46 @@ function applyScoringEvent(teamKey, eventData) {
   if (isWicket) team.wickets += 1;
   if (isLegalBall) team.balls += 1;
 
-  recordDelivery(teamKey, event, runs, isLegalBall, isWicket, offBatRuns);
-  updateUI(statusText || `${team.name}: ${event.toUpperCase()} +${runs}`);
+  recordDelivery(teamKey, event, runs, isLegalBall, isWicket, extraRuns);
+  updateUI();
 }
 
-function setPendingExtra(teamKey, mode) {
-  state.pendingExtras[teamKey] = mode;
-  renderPendingExtraPanels();
-}
-
-function clearPendingExtra(teamKey) {
-  state.pendingExtras[teamKey] = null;
-  renderPendingExtraPanels();
-}
-
-function clearPendingExtras() {
-  for (const teamKey of TEAM_KEYS) {
-    state.pendingExtras[teamKey] = null;
-  }
-  renderPendingExtraPanels();
-}
-
-function pendingLabel(mode) {
-  if (mode === "runout") return "Run-out+: select completed runs";
-  if (mode === "noball+") return "No Ball+: select runs off bat";
-  return "Select runs";
-}
-
-function renderPendingExtraPanels() {
-  const bindings = {
-    home: { panel: ui.homeExtraPanel, label: ui.homeExtraLabel },
-    away: { panel: ui.awayExtraPanel, label: ui.awayExtraLabel }
-  };
-
-  for (const teamKey of TEAM_KEYS) {
-    const mode = state.pendingExtras[teamKey];
-    const target = bindings[teamKey];
-    if (!target) continue;
-
-    target.panel.classList.toggle("hidden", !mode);
-    target.label.textContent = pendingLabel(mode);
-  }
-}
-
-function overSummaryLines(teamKey) {
-  const deliveries = getTeam(teamKey).deliveries;
-  if (!Array.isArray(deliveries) || deliveries.length === 0) {
-    return ["No overs yet."];
-  }
-
-  const overs = [];
-  let current = {
-    legalBalls: 0,
-    runs: 0,
-    wickets: 0,
-    ballsView: []
-  };
-
-  for (const ball of deliveries) {
-    current.runs += Number(ball.runs) || 0;
-    if (ball.isWicket) current.wickets += 1;
-
-    current.ballsView.push(formatDeliveryToken(ball));
-
-    if (ball.isLegalBall) {
-      current.legalBalls += 1;
-    }
-
-    if (current.legalBalls === 6) {
-      overs.push(current);
-      current = {
-        legalBalls: 0,
-        runs: 0,
-        wickets: 0,
-        ballsView: []
-      };
-    }
-  }
-
-  if (current.ballsView.length > 0) {
-    overs.push(current);
-  }
-
-  return overs.map((over, index) => {
-    const wicketText = over.wickets > 0 ? `, ${over.wickets} wicket${over.wickets > 1 ? "s" : ""}` : "";
-    const ballCountText = `${over.legalBalls}/6 balls`;
-    return `Over ${index + 1} (${ballCountText}): ${over.runs} run${over.runs === 1 ? "" : "s"}${wicketText} (${over.ballsView.join(" ")})`;
-  });
-}
-
-function formatDeliveryToken(ball) {
-  switch (ball.event) {
-    case "wicket":
-      return "W";
-    case "runout":
-      return ball.runs > 0 ? `W+${ball.runs}` : "W";
-    case "wide":
-      return "Wd";
-    case "noball":
-    case "no-ball":
-      return "Nb";
-    case "noball+": {
-      const offBat = Number(ball.offBatRuns);
-      return Number.isFinite(offBat) && offBat > 0 ? `Nb+${offBat}` : "Nb";
-    }
-    default:
-      return String(ball.runs);
-  }
-}
-
-function renderOverSummary(teamKey) {
-  const listElement = teamKey === "home" ? ui.homeOverSummary : ui.awayOverSummary;
-  const lines = overSummaryLines(teamKey);
-
-  listElement.innerHTML = "";
-  for (const line of lines) {
-    const li = document.createElement("li");
-    li.textContent = line;
-    listElement.appendChild(li);
-  }
-}
-
-function addRun(teamKey, runs, countBall = true, event = "run") {
-  const team = getTeam(teamKey);
+function addRun(teamKey, runs) {
   applyScoringEvent(teamKey, {
-    event,
+    event: "run",
     runs,
-    isLegalBall: countBall,
-    isWicket: false,
-    statusText: `${team.name}: ${event.toUpperCase()} +${runs}`
+    isLegalBall: true,
+    isWicket: false
   });
 }
 
 function addWicket(teamKey) {
-  const team = getTeam(teamKey);
   applyScoringEvent(teamKey, {
     event: "wicket",
     runs: 0,
     isLegalBall: true,
-    isWicket: true,
-    statusText: `${team.name}: WICKET`
+    isWicket: true
   });
 }
 
 function addRunOut(teamKey, runs) {
   const safeRuns = Number.isFinite(runs) && runs >= 0 ? Math.floor(runs) : 0;
-  const team = getTeam(teamKey);
   applyScoringEvent(teamKey, {
     event: "runout",
     runs: safeRuns,
     isLegalBall: true,
-    isWicket: true,
-    statusText: `${team.name}: RUN-OUT +${safeRuns}`
+    isWicket: true
   });
 }
 
-function addLegalBall(teamKey) {
-  const team = getTeam(teamKey);
+function addExtraPlus(teamKey, mode, additionalRuns) {
+  const safeRuns = Number.isFinite(additionalRuns) && additionalRuns >= 0 ? Math.floor(additionalRuns) : 0;
   applyScoringEvent(teamKey, {
-    event: "dot",
-    runs: 0,
-    isLegalBall: true,
-    isWicket: false,
-    statusText: `${team.name}: dot ball`
-  });
-}
-
-function addNoBallPlus(teamKey, runsOffBat) {
-  const safeRuns = Number.isFinite(runsOffBat) && runsOffBat >= 0 ? Math.floor(runsOffBat) : 0;
-  const team = getTeam(teamKey);
-  const totalRuns = 1 + safeRuns;
-  applyScoringEvent(teamKey, {
-    event: "noball+",
-    runs: totalRuns,
+    event: mode,
+    runs: EXTRA_PENALTY_RUNS + safeRuns,
     isLegalBall: false,
     isWicket: false,
-    offBatRuns: safeRuns,
-    statusText: `${team.name}: NO-BALL +${safeRuns} (total +${totalRuns})`
+    extraRuns: safeRuns
   });
 }
 
@@ -298,19 +189,7 @@ function undo(teamKey) {
   team.balls = last.balls;
   team.deliveries = Array.isArray(last.deliveries) ? [...last.deliveries] : [];
 
-  updateUI(`${team.name}: undo successful`);
-}
-
-function saveTeamDetails() {
-  const homeName = ui.homeTeamInput.value.trim();
-  const awayName = ui.awayTeamInput.value.trim();
-  const maxOvers = Number(ui.maxOversInput.value);
-
-  if (homeName) state.teams.home.name = homeName;
-  if (awayName) state.teams.away.name = awayName;
-  if (Number.isFinite(maxOvers) && maxOvers > 0) state.maxOvers = maxOvers;
-
-  updateUI("Team details saved");
+  updateUI();
 }
 
 function resetMatch() {
@@ -323,131 +202,375 @@ function resetMatch() {
     team.history = [];
   }
 
-  updateUI("Match reset");
+  state.activeTeam = "home";
+  closeSheet();
+  syncSetupInputs();
+  updateUI();
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+/* --- reading the scorebook --------------------------------------------- */
+
+function extraRunsOf(ball) {
+  // offBatRuns is the pre-Wide+ field name, still present in saved matches.
+  const value = Number(ball.extraRuns ?? ball.offBatRuns);
+  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return;
-
-  try {
-    const saved = JSON.parse(raw);
-
-    if (saved?.teams?.home && saved?.teams?.away) {
-      state.maxOvers = Number(saved.maxOvers) || 20;
-      state.teams.home = { ...state.teams.home, ...saved.teams.home };
-      state.teams.away = { ...state.teams.away, ...saved.teams.away };
-      for (const teamKey of TEAM_KEYS) {
-        const team = getTeam(teamKey);
-        team.deliveries = Array.isArray(team.deliveries) ? team.deliveries : [];
-        team.history = Array.isArray(team.history) ? team.history : [];
-      }
+function deliveryToken(ball) {
+  switch (ball.event) {
+    case "wicket":
+      return { text: "W", kind: "wicket" };
+    case "runout":
+      return { text: ball.runs > 0 ? `W+${ball.runs}` : "W", kind: "wicket" };
+    case "wide":
+      return { text: "Wd", kind: "extra" };
+    case "wide+": {
+      const extra = extraRunsOf(ball);
+      return { text: extra > 0 ? `Wd+${extra}` : "Wd", kind: "extra" };
     }
-  } catch {
-    // ignore invalid local storage data
+    case "noball":
+    case "no-ball":
+      return { text: "Nb", kind: "extra" };
+    case "noball+": {
+      const extra = extraRunsOf(ball);
+      return { text: extra > 0 ? `Nb+${extra}` : "Nb", kind: "extra" };
+    }
+    default: {
+      const runs = Number(ball.runs) || 0;
+      if (runs === 0) return { text: "", kind: "dot" };
+      return { text: String(runs), kind: runs >= 4 ? "boundary" : "run" };
+    }
   }
+}
+
+function groupIntoOvers(deliveries) {
+  const overs = [];
+  const newOver = () => ({ legalBalls: 0, runs: 0, wickets: 0, tokens: [] });
+  let current = newOver();
+
+  if (!Array.isArray(deliveries)) return [current];
+
+  for (const ball of deliveries) {
+    current.runs += Number(ball.runs) || 0;
+    if (ball.isWicket) current.wickets += 1;
+    current.tokens.push(deliveryToken(ball));
+    if (ball.isLegalBall) current.legalBalls += 1;
+
+    if (current.legalBalls === BALLS_PER_OVER) {
+      overs.push(current);
+      current = newOver();
+    }
+  }
+
+  // The trailing over is always kept, even when empty: it is the one in progress.
+  overs.push(current);
+  return overs;
+}
+
+/* --- rendering ---------------------------------------------------------- */
+
+function renderOverStrip(team) {
+  const overs = groupIntoOvers(team.deliveries);
+  const current = overs[overs.length - 1];
+  const strip = ui.overStrip;
+  strip.innerHTML = "";
+
+  for (const token of current.tokens) {
+    const box = document.createElement("span");
+    box.className = `ball ball--${token.kind}`;
+    box.textContent = token.text;
+    strip.appendChild(box);
+  }
+
+  for (let i = current.legalBalls; i < BALLS_PER_OVER; i += 1) {
+    const box = document.createElement("span");
+    box.className = "ball ball--empty";
+    strip.appendChild(box);
+  }
+
+  strip.scrollLeft = strip.scrollWidth;
+}
+
+function renderHistory(team) {
+  const list = ui.overList;
+  list.innerHTML = "";
+
+  const overs = groupIntoOvers(team.deliveries).filter(over => over.tokens.length > 0);
+
+  if (overs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "is-empty";
+    li.textContent = "Nothing bowled yet.";
+    list.appendChild(li);
+    return;
+  }
+
+  overs.forEach((over, index) => {
+    const li = document.createElement("li");
+
+    const head = document.createElement("div");
+    head.className = "history-head";
+    const label = document.createElement("span");
+    label.textContent = `Over ${index + 1}`;
+    const tally = document.createElement("span");
+    const wicketText = over.wickets > 0
+      ? `, ${over.wickets} ${over.wickets === 1 ? "wicket" : "wickets"}`
+      : "";
+    tally.textContent = `${over.runs} ${over.runs === 1 ? "run" : "runs"}${wicketText}`;
+    head.append(label, tally);
+
+    const balls = document.createElement("div");
+    balls.className = "history-balls";
+    balls.textContent = over.tokens.map(token => token.text || "0").join("   ");
+
+    li.append(head, balls);
+    list.appendChild(li);
+  });
+}
+
+function renderInningsState(team) {
+  const closed = isInningsComplete(state.activeTeam);
+  const other = getTeam(state.activeTeam === "home" ? "away" : "home");
+
+  for (const button of ui.pad.querySelectorAll("button")) {
+    button.disabled = closed;
+  }
+
+  ui.inningsClosed.hidden = !closed;
+  if (closed) {
+    const reason = team.wickets >= 10
+      ? `${team.name} are all out.`
+      : `${state.maxOvers} ${overWord(state.maxOvers)} bowled.`;
+    ui.inningsClosed.textContent = `${reason} Tap ${other.name} above to score their innings, or undo the last ball.`;
+  }
+}
+
+function renderLastBall(team) {
+  const last = team.deliveries[team.deliveries.length - 1];
+  ui.lastBall.textContent = last
+    ? `Last ball: ${deliveryToken(last).text || "no run"}`
+    : "No balls bowled yet";
+}
+
+function renderSheet() {
+  const mode = state.pendingExtra;
+  ui.sheet.hidden = !mode;
+  ui.backdrop.hidden = !mode;
+
+  if (!mode) return;
+  const copy = SHEET_COPY[mode];
+  if (!copy) return;
+  ui.sheetTitle.textContent = copy.title;
+  ui.sheetHint.textContent = copy.hint;
 }
 
 function render() {
-  ui.homeTitle.textContent = state.teams.home.name;
-  ui.awayTitle.textContent = state.teams.away.name;
+  const team = activeTeam();
 
-  ui.homeRuns.textContent = state.teams.home.runs;
-  ui.homeWickets.textContent = state.teams.home.wickets;
-  ui.homeOvers.textContent = toOvers(state.teams.home.balls);
+  ui.homeName.textContent = state.teams.home.name;
+  ui.awayName.textContent = state.teams.away.name;
+  ui.homeScore.textContent = `${state.teams.home.runs}/${state.teams.home.wickets}`;
+  ui.awayScore.textContent = `${state.teams.away.runs}/${state.teams.away.wickets}`;
 
-  ui.awayRuns.textContent = state.teams.away.runs;
-  ui.awayWickets.textContent = state.teams.away.wickets;
-  ui.awayOvers.textContent = toOvers(state.teams.away.balls);
+  for (const button of document.querySelectorAll("[data-action='switch-team']")) {
+    button.setAttribute("aria-pressed", String(button.dataset.team === state.activeTeam));
+  }
 
-  ui.homeTeamInput.value = state.teams.home.name;
-  ui.awayTeamInput.value = state.teams.away.name;
-  ui.maxOversInput.value = state.maxOvers;
-  renderOverSummary("home");
-  renderOverSummary("away");
+  ui.runs.textContent = team.runs;
+  ui.wickets.textContent = team.wickets;
+  ui.oversText.textContent = `${toOvers(team.balls)} of ${state.maxOvers} ${overWord(state.maxOvers)}`;
 
-  const homeRate = state.teams.home.balls > 0
-    ? (state.teams.home.runs * 6) / state.teams.home.balls
-    : 0;
+  const rate = team.balls > 0 ? (team.runs * BALLS_PER_OVER) / team.balls : 0;
+  ui.rateText.textContent = `${rate.toFixed(2)} an over`;
 
-  const awayRate = state.teams.away.balls > 0
-    ? (state.teams.away.runs * 6) / state.teams.away.balls
-    : 0;
-
-  ui.summaryText.textContent = `${state.teams.home.name}: ${state.teams.home.runs}/${state.teams.home.wickets} (${toOvers(state.teams.home.balls)} overs, RR ${homeRate.toFixed(2)}) | ${state.teams.away.name}: ${state.teams.away.runs}/${state.teams.away.wickets} (${toOvers(state.teams.away.balls)} overs, RR ${awayRate.toFixed(2)})`;
+  renderOverStrip(team);
+  renderInningsState(team);
+  renderLastBall(team);
+  renderHistory(team);
+  renderSheet();
 }
 
-function updateUI(statusText) {
+function updateUI() {
   render();
-  if (statusText) {
-    ui.summaryText.textContent = `${ui.summaryText.textContent} — ${statusText}`;
-  }
   saveState();
 }
 
-function applyPendingExtraRuns(teamKey, runs) {
-  const mode = state.pendingExtras[teamKey];
+/* --- storage ------------------------------------------------------------ */
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Private browsing and a full quota both throw here. Scoring carries on in memory.
+  }
+}
+
+function loadState() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return false;
+  }
+  if (!raw) return false;
+
+  try {
+    const saved = JSON.parse(raw);
+    if (!saved?.teams?.home || !saved?.teams?.away) return false;
+
+    state.maxOvers = Number(saved.maxOvers) > 0 ? Math.floor(Number(saved.maxOvers)) : 20;
+    if (TEAM_KEYS.includes(saved.activeTeam)) state.activeTeam = saved.activeTeam;
+
+    for (const teamKey of TEAM_KEYS) {
+      state.teams[teamKey] = { ...state.teams[teamKey], ...saved.teams[teamKey] };
+      const team = getTeam(teamKey);
+      team.deliveries = Array.isArray(team.deliveries) ? team.deliveries : [];
+      team.history = Array.isArray(team.history) ? team.history : [];
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* --- interaction --------------------------------------------------------- */
+
+function openSheet(mode) {
+  state.pendingExtra = mode;
+  render();
+}
+
+function closeSheet() {
+  state.pendingExtra = null;
+  render();
+}
+
+function applyPendingExtraRuns(runs) {
+  const mode = state.pendingExtra;
   if (!mode) return;
 
   const safeRuns = Number.isFinite(runs) && runs >= 0 ? Math.floor(runs) : 0;
 
   if (mode === "runout") {
-    addRunOut(teamKey, safeRuns);
-  } else if (mode === "noball+") {
-    addNoBallPlus(teamKey, safeRuns);
+    addRunOut(state.activeTeam, safeRuns);
+  } else if (mode === "noball+" || mode === "wide+") {
+    addExtraPlus(state.activeTeam, mode, safeRuns);
   }
 
-  clearPendingExtra(teamKey);
+  closeSheet();
 }
 
-function handleScoreAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLButtonElement)) return;
+function setActiveTeam(teamKey) {
+  if (!TEAM_KEYS.includes(teamKey) || teamKey === state.activeTeam) return;
+  state.activeTeam = teamKey;
+  state.pendingExtra = null;
+  updateUI();
+}
 
-  const action = target.dataset.action;
-  const team = target.dataset.team;
+function setSetupOpen(open) {
+  ui.setupPanel.hidden = !open;
+  ui.setupToggle.setAttribute("aria-expanded", String(open));
+}
 
-  if (!action || !team) return;
+let resetConfirmTimer = null;
 
-  const selectionActions = new Set(["runout", "noball+", "extra-run", "extra-cancel"]);
-  if (state.pendingExtras[team] && !selectionActions.has(action)) {
-    clearPendingExtra(team);
+function clearResetConfirm() {
+  if (resetConfirmTimer) clearTimeout(resetConfirmTimer);
+  resetConfirmTimer = null;
+  ui.resetBtn.classList.remove("confirming");
+  ui.resetBtn.textContent = "Reset match";
+}
+
+function handleReset() {
+  if (resetConfirmTimer) {
+    clearResetConfirm();
+    resetMatch();
+    return;
   }
 
+  ui.resetBtn.classList.add("confirming");
+  ui.resetBtn.textContent = "Tap again to clear";
+  resetConfirmTimer = setTimeout(clearResetConfirm, 4000);
+}
+
+function buzz() {
+  // Android only; iOS has no vibration API. Silent when unsupported or denied.
+  if (typeof navigator.vibrate !== "function") return;
+  try {
+    navigator.vibrate(8);
+  } catch {
+    // A blocked vibration must never interrupt scoring.
+  }
+}
+
+function handleAction(event) {
+  const trigger = event.target.closest("[data-action]");
+  if (!trigger || trigger.disabled) return;
+
+  const action = trigger.dataset.action;
+  const team = state.activeTeam;
+
   const handlers = {
-    run: () => {
-      const value = Number(target.dataset.value);
-      addRun(team, value, true, "run");
-    },
+    run: () => addRun(team, Number(trigger.dataset.value)),
     wicket: () => addWicket(team),
-    runout: () => setPendingExtra(team, "runout"),
-    ball: () => addLegalBall(team),
-    wide: () => addRun(team, 1, false, "wide"),
-    noball: () => addRun(team, 1, false, "noball"),
-    "noball+": () => setPendingExtra(team, "noball+"),
-    "extra-run": () => applyPendingExtraRuns(team, Number(target.dataset.value)),
-    "extra-cancel": () => clearPendingExtra(team),
-    undo: () => undo(team)
+    runout: () => openSheet("runout"),
+    "wide+": () => openSheet("wide+"),
+    "noball+": () => openSheet("noball+"),
+    "extra-run": () => applyPendingExtraRuns(Number(trigger.dataset.value)),
+    "extra-cancel": () => closeSheet(),
+    undo: () => undo(team),
+    "switch-team": () => setActiveTeam(trigger.dataset.team),
+    "toggle-setup": () => setSetupOpen(ui.setupPanel.hidden),
+    "close-setup": () => setSetupOpen(false),
+    "reset-match": () => handleReset()
   };
 
   const handler = handlers[action];
-  if (handler) {
-    handler();
-  }
+  if (!handler) return;
+
+  if (action !== "reset-match") clearResetConfirm();
+  buzz();
+  handler();
+}
+
+function syncSetupInputs() {
+  ui.homeTeamInput.value = state.teams.home.name;
+  ui.awayTeamInput.value = state.teams.away.name;
+  ui.maxOversInput.value = state.maxOvers;
+}
+
+function bindSetupInputs() {
+  const rename = (teamKey, input, fallback) => {
+    input.addEventListener("input", () => {
+      getTeam(teamKey).name = input.value.trim() || fallback;
+      updateUI();
+    });
+  };
+
+  rename("home", ui.homeTeamInput, "Home");
+  rename("away", ui.awayTeamInput, "Opponent");
+
+  ui.maxOversInput.addEventListener("input", () => {
+    const value = Number(ui.maxOversInput.value);
+    if (!Number.isFinite(value) || value <= 0) return;
+    state.maxOvers = Math.floor(value);
+    updateUI();
+  });
 }
 
 function init() {
-  loadState();
-  clearPendingExtras();
-  render();
+  const hadSavedMatch = loadState();
+  syncSetupInputs();
+  bindSetupInputs();
 
-  document.querySelector(".scoreboard-grid").addEventListener("click", handleScoreAction);
-  ui.saveTeamsBtn.addEventListener("click", saveTeamDetails);
-  ui.resetMatchBtn.addEventListener("click", resetMatch);
+  document.body.addEventListener("click", handleAction);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && state.pendingExtra) closeSheet();
+  });
+
+  // A fresh phone opens on setup: name the teams before the first ball.
+  setSetupOpen(!hadSavedMatch);
+  render();
 }
 
 init();
