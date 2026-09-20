@@ -41,9 +41,15 @@
         <label for="awayTeam">Opponent</label>
         <input id="awayTeam" type="text" placeholder="Opponent" autocomplete="off" enterkeyhint="done" />
       </div>
-      <div class="field field--short">
-        <label for="maxOvers">Overs each</label>
-        <input id="maxOvers" type="number" min="1" max="99" inputmode="numeric" value="5" />
+      <div class="field-pair">
+        <div class="field">
+          <label for="maxOvers">Overs each</label>
+          <input id="maxOvers" type="number" min="1" max="99" inputmode="numeric" value="5" />
+        </div>
+        <div class="field">
+          <label for="maxWickets">Wickets each</label>
+          <input id="maxWickets" type="number" min="1" max="10" inputmode="numeric" value="8" />
+        </div>
       </div>
       <p class="setup-note">A wide or no ball adds 2 runs and doesn't count as a ball.</p>
       <div class="setup-actions">

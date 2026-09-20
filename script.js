@@ -3,11 +3,12 @@ const STORAGE_KEY = "cricket-scoring-state-v1";
 const EXTRA_PENALTY_RUNS = 2;
 const BALLS_PER_OVER = 6;
 const DEFAULT_MAX_OVERS = 5;
-const ALL_OUT_WICKETS = 10;
+const DEFAULT_MAX_WICKETS = 8;
 const TEAM_KEYS = ["home", "away"];
 
 const state = {
   maxOvers: DEFAULT_MAX_OVERS,
+  maxWickets: DEFAULT_MAX_WICKETS,
   activeTeam: "home",
   // Whoever is scored first bats first, which is what makes the second innings a chase.
   firstInnings: null,
@@ -36,6 +37,7 @@ const ui = {
   homeTeamInput: document.getElementById("homeTeam"),
   awayTeamInput: document.getElementById("awayTeam"),
   maxOversInput: document.getElementById("maxOvers"),
+  maxWicketsInput: document.getElementById("maxWickets"),
   setupPanel: document.getElementById("setupPanel"),
   setupToggle: document.getElementById("setupToggle"),
   resetBtn: document.getElementById("resetBtn"),
@@ -99,7 +101,7 @@ function activeTeam() {
 
 function isInningsComplete(teamKey) {
   const team = getTeam(teamKey);
-  return team.wickets >= ALL_OUT_WICKETS || team.balls >= state.maxOvers * BALLS_PER_OVER;
+  return team.wickets >= state.maxWickets || team.balls >= state.maxOvers * BALLS_PER_OVER;
 }
 
 function ballsRemaining(teamKey) {
@@ -108,7 +110,7 @@ function ballsRemaining(teamKey) {
 
 function inningsEndReason(teamKey) {
   const team = getTeam(teamKey);
-  return team.wickets >= ALL_OUT_WICKETS
+  return team.wickets >= state.maxWickets
     ? `${team.name} are all out for ${team.runs}.`
     : `${team.name} finished on ${team.runs} from ${plural(state.maxOvers, "over")}.`;
 }
@@ -124,7 +126,7 @@ function matchResult() {
   const second = getTeam(secondKey);
 
   if (second.runs > first.runs) {
-    const inHand = ALL_OUT_WICKETS - second.wickets;
+    const inHand = state.maxWickets - second.wickets;
     const margin = inHand > 0 ? ` by ${plural(inHand, "wicket")}` : "";
     return `${second.name} won${margin}`;
   }
@@ -510,6 +512,7 @@ function loadState() {
     if (!saved?.teams?.home || !saved?.teams?.away) return false;
 
     state.maxOvers = Number(saved.maxOvers) > 0 ? Math.floor(Number(saved.maxOvers)) : DEFAULT_MAX_OVERS;
+    state.maxWickets = Number(saved.maxWickets) > 0 ? Math.floor(Number(saved.maxWickets)) : DEFAULT_MAX_WICKETS;
     if (TEAM_KEYS.includes(saved.activeTeam)) state.activeTeam = saved.activeTeam;
     state.firstInnings = TEAM_KEYS.includes(saved.firstInnings)
       ? saved.firstInnings
@@ -631,6 +634,7 @@ function syncSetupInputs() {
   ui.homeTeamInput.value = state.teams.home.name;
   ui.awayTeamInput.value = state.teams.away.name;
   ui.maxOversInput.value = state.maxOvers;
+  ui.maxWicketsInput.value = state.maxWickets;
 }
 
 function bindSetupInputs() {
@@ -644,11 +648,22 @@ function bindSetupInputs() {
   rename("home", ui.homeTeamInput, "Home");
   rename("away", ui.awayTeamInput, "Opponent");
 
-  ui.maxOversInput.addEventListener("input", () => {
-    const value = Number(ui.maxOversInput.value);
-    if (!Number.isFinite(value) || value <= 0) return;
-    state.maxOvers = Math.floor(value);
-    updateUI();
+  const bindWholeNumber = (input, apply) => {
+    input.addEventListener("input", () => {
+      const value = Number(input.value);
+      // A half-typed or cleared box is left alone rather than snapped to a default.
+      if (!Number.isFinite(value) || value <= 0) return;
+      apply(Math.floor(value));
+      updateUI();
+    });
+  };
+
+  bindWholeNumber(ui.maxOversInput, value => {
+    state.maxOvers = value;
+  });
+
+  bindWholeNumber(ui.maxWicketsInput, value => {
+    state.maxWickets = value;
   });
 }
 
